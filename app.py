@@ -6,7 +6,7 @@ import io
 
 st.set_page_config(page_title="Fair Value - Extrator Bancário", layout="wide")
 
-st.title("🏦 Extrator Fair Value: Extração Integral")
+st.title("🏦 Fair Value: Extração Bancário")
 
 arquivo_pdf = st.file_uploader("Selecione o Extrato Bancário (PDF)", type="pdf")
 
