@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import io
 
-st.set_page_config(page_title="Fair Value - Extrator Oficial", layout="wide")
+st.set_page_config(page_title="Fair Value - Extrator Pro", layout="wide")
 
 st.title("🏦 Extrator Fair Value: Validação e Padronização")
 
@@ -17,21 +17,22 @@ if arquivo_pdf:
             tabelas = pagina.extract_tables()
             for tabela in tabelas:
                 for linha in tabela:
-                    # Converte cada célula para texto e remove espaços extras
-                    # Se for None, vira uma string vazia para evitar erro de 'float'
-                    linha_limpa = [str(c).strip() if c is not None else "" for c in linha]
+                    # Converte tudo para string e limpa None
+                    linha_limpa = [str(c).replace('\n', ' ').strip() if c else "" for c in linha]
                     if any(linha_limpa):
                         dados_brutos.append(linha_limpa)
 
     if dados_brutos:
         df_b = pd.DataFrame(dados_brutos)
 
-        # 1. APRESENTAR A PRÉVIA (O "PRINT" DO EXTRATO)
-        st.subheader("🔍 Verificação do Extrato")
-        st.info("Abaixo está o 'print' das colunas encontradas. Identifique os números para configurar o extrator.")
+        # ---------------------------------------------------------
+        # 1. PRÉVIA REAL (O "PRINT" DO CABEÇALHO)
+        # ---------------------------------------------------------
+        st.subheader("🔍 1. Prévia do Extrato (Cabeçalho Original)")
+        st.info("Identifique abaixo os números das colunas para configurar o extrator.")
         st.dataframe(df_b.head(50), use_container_width=True)
 
-        st.markdown("### ⚙️ Calibração de Colunas")
+        st.markdown("### ⚙️ 2. Calibração de Colunas")
         col1, col2, col3 = st.columns(3)
         with col1: c_data = st.number_input("Nº da coluna de DATA", min_value=0, value=0)
         with col2: c_desc = st.number_input("Nº da coluna de HISTÓRICO", min_value=0, value=2)
@@ -39,47 +40,56 @@ if arquivo_pdf:
 
         if st.button("🚀 VALIDAR E GERAR MOVIMENTAÇÃO LÍQUIDA"):
             try:
-                # Seleciona as colunas definidas pelo operador
-                df_f = df_b.iloc[:, [c_data, c_desc, c_valor]].copy()
-                df_f.columns = ['DATA', 'HISTORICO', 'VALOR_BRUTO']
+                # Criando a estrutura baseada na sua seleção
+                linhas_processadas = []
+                
+                # Percorre o dataframe para "soldar" linhas quebradas (comum no Sicoob)
+                for i in range(len(df_b)):
+                    data = df_b.iloc[i, c_data]
+                    hist = df_b.iloc[i, c_desc]
+                    valor = df_b.iloc[i, c_valor]
+                    
+                    # Se a linha atual não tem data mas tem histórico/valor, 
+                    # ela pertence à linha de cima (ajuste para o Sicoob)
+                    if data == "" and i > 0:
+                        if len(linhas_processadas) > 0:
+                            linhas_processadas[-1][1] += " " + hist
+                            if valor != "": linhas_processadas[-1][2] = valor
+                        continue
+                    
+                    linhas_processadas.append([data, hist, valor])
 
-                # 2. EXCLUIR SALDOS E CABEÇALHOS
-                # Criamos uma lista de termos que indicam saldos ou lixo
-                termos_ignorar = ["SALDO", "RESUMO", "DATA", "HISTÓRICO", "VALOR", "DOCUMENTO", "EXTRATO"]
-                
-                # Filtramos o DataFrame
-                mask = df_f['HISTORICO'].str.upper().apply(lambda x: any(t in x for t in termos_ignorar))
-                df_f = df_f[~mask]
-                
-                # Remove linhas onde a data é inválida ou vazia
+                df_f = pd.DataFrame(linhas_processadas, columns=['DATA', 'HISTORICO', 'VALOR_BRUTO'])
+
+                # ---------------------------------------------------------
+                # 2. EXCLUIR SALDOS (ANTERIOR, DIA, FINAL)
+                # ---------------------------------------------------------
+                termos_ignorar = ["SALDO", "RESUMO", "DATA", "HISTÓRICO", "VALOR", "DOCUMENTO", "CHEQUE ESPECIAL", "TARIFAS VENCIDAS"]
+                df_f = df_f[~df_f['HISTORICO'].str.upper().str.contains('|'.join(termos_ignorar), na=False)]
                 df_f = df_f[df_f['DATA'].str.strip() != ""]
-                df_f = df_f[df_f['DATA'] != "None"]
 
-                # 3. CRIAR COLUNA INDICATIVO (D/C) E LIMPAR VALOR
-                def processar_financas(valor_original):
-                    texto = str(valor_original).upper()
-                    # Identifica se é Débito (tem sinal de - ou letra D)
-                    indicativo = "D" if "-" in texto or "D" in texto else "C"
-                    # Limpa o valor para deixar apenas números e separadores
-                    valor_num = re.sub(r'[^\d,.]', '', texto)
-                    return pd.Series([valor_num, indicativo])
+                # ---------------------------------------------------------
+                # 3. COLUNA INDICATIVO (C/D) E VALOR LIMPO
+                # ---------------------------------------------------------
+                def separar_sinal(texto_valor):
+                    v = str(texto_valor).upper().strip()
+                    # Identifica D se houver sinal de menos (-) ou a letra D
+                    indicativo = "D" if "-" in v or "D" in v else "C"
+                    # Remove tudo que não é número, vírgula ou ponto
+                    valor_limpo = re.sub(r'[^\d,.]', '', v)
+                    return pd.Series([valor_limpo, indicativo])
 
-                df_f[['VALOR', 'INDICATIVO']] = df_f['VALOR_BRUTO'].apply(processar_financas)
+                df_f[['VALOR', 'INDICATIVO']] = df_f['VALOR_BRUTO'].apply(separar_sinal)
 
-                # Limpeza final: remove linhas onde o valor ficou vazio
-                df_f = df_f[df_f['VALOR'] != ""]
-
-                # Exibição do Resultado
+                # Finalizando a tabela
                 df_final = df_f[['DATA', 'HISTORICO', 'VALOR', 'INDICATIVO']].reset_index(drop=True)
 
                 st.success(f"✅ Sucesso! {len(df_final)} movimentações líquidas processadas.")
                 st.dataframe(df_final, use_container_width=True)
 
-                # Exportação
+                # Download
                 csv = df_final.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Baixar CSV Padronizado", csv, "extrato_padronizado_fairvalue.csv", "text/csv")
+                st.download_button("📥 Baixar CSV Fair Value", csv, "extrato_padronizado.csv", "text/csv")
 
             except Exception as e:
-                st.error(f"Erro na validação: {e}")
-    else:
-        st.error("O sistema não encontrou tabelas neste PDF.")
+                st.error(f"Erro no processamento: {e}")
