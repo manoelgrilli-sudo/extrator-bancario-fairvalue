@@ -8,17 +8,17 @@ st.set_page_config(page_title="Fair Value - Extrator Pro", layout="wide")
 
 st.title("🏦 Extrator Fair Value: Validação e Padronização")
 
-# 1. Upload
 arquivo_pdf = st.file_uploader("Selecione o Extrato Bancário (PDF)", type="pdf")
 
 if arquivo_pdf:
     dados_brutos = []
     with pdfplumber.open(io.BytesIO(arquivo_pdf.read())) as pdf:
         for pagina in pdf.pages:
-            tabela = pagina.extract_table()
-            if tabela:
+            # Extraímos o texto puro e as tabelas para não perder nada
+            tabelas = pagina.extract_tables()
+            for tabela in tabelas:
                 for linha in tabela:
-                    # Limpa espaços e trata como texto
+                    # Filtramos apenas linhas que têm conteúdo real
                     linha_limpa = [" ".join(str(c).split()) if c else "" for c in linha]
                     if any(c.strip() for c in linha_limpa):
                         dados_brutos.append(linha_limpa)
@@ -27,62 +27,70 @@ if arquivo_pdf:
         df_b = pd.DataFrame(dados_brutos)
 
         # ---------------------------------------------------------
-        # 1. APRESENTAR PRÉVIA (O "PRINT" DO CABEÇALHO)
+        # 1. PRÉVIA REAL (MOSTRANDO AS MOVIMENTAÇÕES)
         # ---------------------------------------------------------
-        st.subheader("🔍 Verificação do Cabeçalho")
-        st.warning("⚠️ Verifique abaixo quais colunas correspondem a Data, Histórico e Valor no extrato original.")
-        st.dataframe(df_b.head(20), use_container_width=True)
+        st.subheader("🔍 Verificação do Cabeçalho e Dados")
+        st.info("👆 Role a tabela abaixo para confirmar se os nomes dos clientes e valores estão aparecendo.")
+        
+        # Mostramos 50 linhas para garantir que o operador veja os dados reais
+        st.dataframe(df_b.head(50), use_container_width=True)
 
         st.markdown("### ⚙️ Calibração de Colunas")
+        st.write("Identifique na tabela acima os números das colunas:")
+        
         col1, col2, col3 = st.columns(3)
         with col1: c_data = st.number_input("Nº da coluna de DATA", min_value=0, value=0)
         with col2: c_desc = st.number_input("Nº da coluna de HISTÓRICO", min_value=0, value=2)
         with col3: c_valor = st.number_input("Nº da coluna de VALOR", min_value=0, value=3)
 
-        # O sistema só avança se o operador clicar aqui
         if st.button("🚀 VALIDAR E GERAR MOVIMENTAÇÃO LÍQUIDA"):
             try:
-                # Mapeia as colunas escolhidas
+                # Mapeamento
                 df_f = df_b.iloc[:, [c_data, c_desc, c_valor]].copy()
-                df_f.columns = ['DATA', 'HISTORICO', 'VALOR_ORIGINAL']
-                
-                # Força formato texto
+                df_f.columns = ['DATA', 'HISTORICO', 'VALOR_BRUTO']
                 df_f = df_f.astype(str)
 
                 # ---------------------------------------------------------
-                # 2. EXCLUIR SALDOS (ANTERIOR, DIA, FINAL)
+                # 2. EXCLUSÃO DE SALDOS (Lógica Abrangente)
                 # ---------------------------------------------------------
-                termos_excluir = ["SALDO", "RESUMO", "DATA", "HISTÓRICO", "DOCUMENTO", "TOTAL"]
-                df_f = df_f[~df_f['HISTORICO'].str.upper().str.contains('|'.join(termos_excluir), na=False)]
+                # Remove linhas de saldo e títulos repetidos
+                termos_ignorar = ["SALDO DO DIA", "SALDO ANTERIOR", "SALDO FINAL", "SALDO DISPONÍVEL", "RESUMO", "DATA", "HISTÓRICO", "VALOR"]
+                df_f = df_f[~df_f['HISTORICO'].str.upper().str.contains('|'.join(termos_ignorar), na=False)]
+                
+                # Remove linhas onde a data está vazia ou é apenas o título
                 df_f = df_f[df_f['DATA'].str.strip() != ""]
+                df_f = df_f[df_f['DATA'].str.upper() != "DATA"]
 
                 # ---------------------------------------------------------
-                # 3. CRIAR COLUNA INDICATIVO (C/D) E LIMPAR VALOR
+                # 3. COLUNA INDICATIVO (D/C) E LIMPEZA DE VALOR
                 # ---------------------------------------------------------
-                def identificar_sinal_e_limpar(valor_bruto):
-                    v = valor_bruto.upper().strip()
-                    # Identifica sinal
-                    sinal = "C" # Padrão crédito
-                    if "D" in v or "-" in v:
+                def tratar_valor_e_sinal(texto_valor):
+                    v = texto_valor.upper().strip()
+                    sinal = "C" # Crédito por padrão
+                    
+                    # Checa se tem sinal de menos ou a letra D
+                    if "-" in v or "D" in v:
                         sinal = "D"
                     
-                    # Limpa o valor (remove R$, letras, sinais, mantendo apenas números e pontuação)
-                    num_limpo = re.sub(r'[^\d,.]', '', v)
-                    return pd.Series([num_limpo, sinal])
+                    # Limpa o valor: mantém apenas números, vírgula e ponto
+                    valor_limpo = re.sub(r'[^\d,.]', '', v)
+                    return pd.Series([valor_limpo, sinal])
 
-                df_f[['VALOR', 'INDICATIVO']] = df_f['VALOR_ORIGINAL'].apply(identificar_sinal_e_limpar)
+                # Aplica a lógica em massa
+                df_f[['VALOR', 'INDICATIVO']] = df_f['VALOR_BRUTO'].apply(tratar_valor_e_sinal)
 
-                # Resultado Final Padronizado
+                # Filtro final: remove linhas que ficaram sem valor após a limpeza
+                df_f = df_f[df_f['VALOR'] != ""]
+
+                # Exibição do Resultado Final
                 df_final = df_f[['DATA', 'HISTORICO', 'VALOR', 'INDICATIVO']].reset_index(drop=True)
 
-                st.success(f"✅ Processado! {len(df_final)} movimentações líquidas identificadas.")
+                st.success(f"✅ Sucesso! {len(df_final)} movimentações líquidas processadas.")
                 st.dataframe(df_final, use_container_width=True)
 
-                # Exportação
-                csv = df_final.to_csv(index=False, sep=';', encoding='latin1').encode('latin1')
-                st.download_button("📥 Baixar CSV Fair Value", csv, "extrato_limpo.csv", "text/csv")
+                # Exportação CSV
+                csv = df_final.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("📥 Baixar CSV Fair Value", csv, "extrato_padronizado.csv", "text/csv")
 
             except Exception as e:
-                st.error(f"Erro na calibração: {e}. Verifique se os números das colunas estão corretos na prévia.")
-    else:
-        st.error("Não conseguimos ler os dados deste PDF. Verifique se ele é um extrato original.")
+                st.error(f"Erro ao processar as colunas: {e}")
