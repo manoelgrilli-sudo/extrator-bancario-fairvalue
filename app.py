@@ -5,16 +5,17 @@ import re
 import io
 import json
 
-st.set_page_config(page_title="Fair Value - Ajuste Final Sicoob", layout="wide")
+st.set_page_config(page_title="Fair Value - Sistema Universal", layout="wide")
 
 def carregar_config():
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             return json.load(f)
     except:
-        return {"bancos": [{"nome": "SICOOB", "identificador": "SICOOB", "colunas": {"data": 0, "historico": 2, "valor": 3}}], "categorias": {}}
+        # Configuração de emergência caso o JSON falhe
+        return {"bancos": [{"nome": "PADRAO", "identificador": "DEFAULT", "colunas": {"data": 0, "historico": 1, "valor": 2}}], "categorias": {}}
 
-st.title("🏦 Extrator Fair Value: Precisão Sicoob")
+st.title("🏦 Extrator Fair Value: Multi-Banco")
 
 arquivo_pdf = st.file_uploader("Selecione o Extrato Bancário (PDF)", type="pdf")
 
@@ -23,14 +24,20 @@ if arquivo_pdf:
     linhas_originais = []
     
     with pdfplumber.open(io.BytesIO(arquivo_pdf.read())) as pdf:
-        texto_completo = pdf.pages[0].extract_text().upper()
-        banco = next((b for b in config['bancos'] if b['identificador'] in texto_completo), config['bancos'][0])
+        # Lê a primeira página para identificar o banco pelo cabeçalho
+        texto_capa = pdf.pages[0].extract_text().upper() if pdf.pages[0].extract_text() else ""
+        
+        # Busca o banco no JSON. Se não achar, usa o último (PADRAO)
+        banco = config['bancos'][-1]
+        for b in config['bancos']:
+            if b['identificador'] in texto_capa:
+                banco = b
+                break
         
         for pagina in pdf.pages:
             tabela = pagina.extract_table({"vertical_strategy": "text", "horizontal_strategy": "lines", "intersection_y_tolerance": 3})
             if tabela:
                 for linha in tabela:
-                    # Limpa a linha e remove None
                     dados = [str(c).replace('\n', ' ').strip() if c else "" for c in linha]
                     if any(dados):
                         linhas_originais.append(dados)
@@ -51,43 +58,43 @@ if arquivo_pdf:
                 hist = df_bruto.iloc[i, idx_hist]
                 valor = df_bruto.iloc[i, idx_valor]
                 
-                # Se tem formato de data (ex: 10/mar), é uma nova linha de transação
-                if re.search(r'\d{2}/[a-zA-Z]{3}', data) or re.search(r'\d{2}/\d{2}', data):
+                # Identifica se a linha tem uma data (Início de uma transação)
+                if re.search(r'\d{2}/', data):
                     final_data.append({"DATA": data, "HISTORICO": hist, "VALOR_ORIGINAL": valor})
-                
-                # Se NÃO tem data e NÃO tem valor, mas tem texto no histórico, 
-                # é o nome do cliente que quebrou para a linha de BAIXO.
-                elif not data and not valor and hist and len(final_data) > 0:
+                # Se não tem data, mas tem texto, concatena no histórico da transação anterior
+                elif hist and len(final_data) > 0:
                     final_data[-1]["HISTORICO"] += " " + hist
+                    if not final_data[-1]["VALOR_ORIGINAL"] and valor:
+                        final_data[-1]["VALOR_ORIGINAL"] = valor
+
+            if final_data:
+                df_temp = pd.DataFrame(final_data)
+
+                def limpar_e_categorizar(row):
+                    v_bruto = str(row['VALOR_ORIGINAL']).upper()
+                    indicativo = "D" if "D" in v_bruto or "-" in v_bruto else "C"
+                    valor_num = re.sub(r'[^\d,.]', '', v_bruto)
+                    
+                    h_upper = str(row['HISTORICO']).upper()
+                    cat = "Não Identificado"
+                    for chave, valor_cat in config.get('categorias', {}).items():
+                        if chave.upper() in h_upper:
+                            cat = valor_cat
+                            break
+                    return pd.Series([valor_num, indicativo, cat])
+
+                df_temp[['VALOR', 'INDICATIVO', 'CATEGORIA']] = df_temp.apply(limpar_e_categorizar, axis=1)
                 
-                # Se NÃO tem data mas TEM valor, tenta associar à transação atual
-                elif not data and valor and len(final_data) > 0:
-                    final_data[-1]["VALOR_ORIGINAL"] = valor
-
-            df_processado = pd.DataFrame(final_data)
-
-            # Função de Limpeza e Categorização
-            def limpar_e_categorizar(row):
-                v_bruto = str(row['VALOR_ORIGINAL']).upper()
-                indicativo = "D" if "D" in v_bruto or "-" in v_bruto else "C"
-                valor_limpo = re.sub(r'[^\d,.]', '', v_bruto)
+                # --- CORREÇÃO DO ERRO AQUI (.str.contains) ---
+                df_final = df_temp[~df_temp['HISTORICO'].str.upper().str.contains("SALDO DO DIA", na=False)]
+                # ---------------------------------------------
                 
-                h_upper = str(row['HISTORICO']).upper()
-                cat = "Não Identificado"
-                for chave, valor_cat in config.get('categorias', {}).items():
-                    if chave.upper() in h_upper:
-                        cat = valor_cat
-                        break
-                return pd.Series([valor_limpo, indicativo, cat])
+                df_final = df_final[['DATA', 'HISTORICO', 'VALOR', 'INDICATIVO', 'CATEGORIA']]
 
-            df_processado[['VALOR', 'INDICATIVO', 'CATEGORIA']] = df_processado.apply(limpar_e_categorizar, axis=1)
-            
-            # Filtro para remover linhas de "Saldo do Dia" que poluem o faturamento
-            df_final = df_processado[~df_processado['HISTORICO'].str.upper().contains("SALDO DO DIA")]
-            df_final = df_final[['DATA', 'HISTORICO', 'VALOR', 'INDICATIVO', 'CATEGORIA']]
-
-            st.success("✅ Extrato sincronizado com sucesso!")
-            st.dataframe(df_final, use_container_width=True)
-            
-            csv = df_final.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Baixar CSV Corrigido", csv, "extrato_fairvalue_sincronizado.csv", "text/csv")
+                st.success(f"✅ Extrato do {banco['nome']} processado com sucesso!")
+                st.dataframe(df_final, use_container_width=True)
+                
+                csv = df_final.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button(f"📥 Baixar CSV {banco['nome']}", csv, "extrato_fairvalue.csv", "text/csv")
+            else:
+                st.warning("Nenhuma transação válida encontrada com os critérios atuais.")
