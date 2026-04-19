@@ -1,0 +1,26 @@
+{
+  "bancos": [
+    {
+      "nome": "SICOOB",
+      "identificador": "SICOOB",
+      "colunas": { "data": 0, "historico": 2, "valor": 3 }
+    },
+    {
+      "nome": "ITAÚ",
+      "identificador": "ITAÚ UNIBANCO",
+      "colunas": { "data": 0, "historico": 1, "valor": 3 }
+    },
+    {
+      "nome": "PADRAO",
+      "identificador": "DEFAULT",
+      "colunas": { "data": 0, "historico": 1, "valor": 2 }
+    }
+  ],
+  "categorias": {
+    "RAFAEL DOS REIS": "Faturamento - Curvelo",
+    "KAMILLY NICOLE": "Faturamento - Curvelo",
+    "HOUSE TEC": "Faturamento - Curvelo",
+    "TARIFA": "Despesa Bancária",
+    "SALDO": "Informativo de Saldo"
+  }
+}
